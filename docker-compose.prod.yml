@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: greenwash_db_prod
+    environment:
+      POSTGRES_USER: ${DB_USER:-greenwash}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-greenwash123}
+      POSTGRES_DB: ${DB_NAME:-greenwash_db}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-greenwash}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  python-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: greenwash_api_prod
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-greenwash}:${DB_PASSWORD:-greenwash123}@postgres:5432/${DB_NAME:-greenwash_db}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  nextjs:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: greenwash_frontend_prod
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000}
+      PYTHON_API_URL: http://python-api:8000
+    depends_on:
+      - python-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data_prod:
+
