@@ -58,4 +58,6 @@ yarn-error.log*
 uploads/
 temp/
 
+# Markdown files (except README.md)
 *.md
+!README.md
