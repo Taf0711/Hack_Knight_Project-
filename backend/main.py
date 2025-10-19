@@ -7,7 +7,7 @@ import os
 import structlog
 import shutil
 
-from database import get_session, init_db
+from database import get_session, init_db, engine
 from models.database import Company, Document, Passage, Claim, Evidence, Score
 from models.schemas import (
     CompanyCreate, CompanyResponse, DocumentUploadResponse,
@@ -76,6 +76,44 @@ async def health():
         "database": "connected",
         "services": ["pdf", "embeddings", "rag", "claims", "evidence", "scorer"]
     }
+
+
+@app.post("/api/admin/reset")
+async def reset_database(session: Session = Depends(get_session)):
+    """
+    DANGER: Reset the entire database - delete all documents, claims, evidence, etc.
+    This is useful for development and testing.
+    """
+    try:
+        # Delete all data in order (respecting foreign keys)
+        session.exec(select(Score)).all()
+        session.execute(select(Score)).all()
+        
+        # Use raw SQL for efficient truncation
+        from sqlmodel import text
+        session.exec(text("TRUNCATE TABLE score, evidence, claim, passage, document, company RESTART IDENTITY CASCADE;"))
+        session.commit()
+        
+        # Clear uploads directory
+        import glob
+        upload_files = glob.glob(os.path.join(UPLOAD_DIR, "*"))
+        for f in upload_files:
+            try:
+                os.remove(f)
+            except Exception as e:
+                logger.warning(f"Could not remove file {f}: {str(e)}")
+        
+        logger.info("Database and uploads reset successfully")
+        
+        return {
+            "message": "Database reset successfully",
+            "tables_cleared": ["score", "evidence", "claim", "passage", "document", "company"],
+            "uploads_cleared": len(upload_files)
+        }
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Reset failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
 
 
 # ============= Company Endpoints =============
@@ -219,6 +257,95 @@ async def get_document(
 
 # ============= Analysis Endpoints =============
 
+@app.delete("/api/documents/{document_id}/claims")
+async def delete_document_claims(
+    document_id: UUID,
+    session: Session = Depends(get_session)
+):
+    """Delete all claims and evidence for a document (for reanalysis)"""
+    # Check if document exists
+    document = session.get(Document, document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Delete all claims (cascades to evidence and scores)
+    claims = session.exec(select(Claim).where(Claim.document_id == document_id)).all()
+    for claim in claims:
+        session.delete(claim)
+    
+    session.commit()
+    logger.info(f"Deleted {len(claims)} claims for document: {document_id}")
+    
+    return {"message": f"Deleted {len(claims)} claims", "document_id": str(document_id)}
+
+
+@app.post("/api/documents/{document_id}/reprocess")
+async def reprocess_document(
+    document_id: UUID,
+    session: Session = Depends(get_session)
+):
+    """Reprocess document from scratch (delete passages and recreate them)"""
+    # Get document
+    document = session.get(Document, document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    if not os.path.exists(document.file_path):
+        raise HTTPException(status_code=404, detail="PDF file not found on disk")
+    
+    # Delete existing passages and claims
+    passages = session.exec(select(Passage).where(Passage.document_id == document_id)).all()
+    for passage in passages:
+        session.delete(passage)
+    
+    claims = session.exec(select(Claim).where(Claim.document_id == document_id)).all()
+    for claim in claims:
+        session.delete(claim)
+    
+    session.commit()
+    logger.info(f"Reprocessing document: {document_id}")
+    
+    try:
+        # Re-extract PDF
+        pdf_result = pdf_processor.extract(document.file_path)
+        full_text = pdf_result["full_text"]
+        page_dict = pdf_result["pages"]
+        
+        logger.info(f"Re-extracted PDF with {len(full_text)} characters")
+        
+        # Re-chunk and embed
+        chunks = embedding_service.chunk_text(full_text, page_dict)
+        logger.info(f"Created {len(chunks)} chunks")
+        
+        # Generate embeddings
+        texts = [chunk["text"] for chunk in chunks]
+        embeddings = embedding_service.generate_embeddings_batch(texts)
+        
+        # Save passages
+        for chunk, embedding in zip(chunks, embeddings):
+            passage = Passage(
+                document_id=document_id,
+                page=chunk.get("page"),
+                text=chunk["text"],
+                embedding=embedding
+            )
+            session.add(passage)
+        
+        session.commit()
+        logger.info(f"Saved {len(chunks)} passages with embeddings")
+        
+        return {
+            "message": "Document reprocessed successfully",
+            "document_id": str(document_id),
+            "passages_created": len(chunks)
+        }
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Reprocessing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}")
+
+
 @app.post("/api/documents/{document_id}/analyze", response_model=AnalysisResponse)
 async def analyze_document(
     document_id: UUID,
@@ -276,12 +403,13 @@ async def analyze_document(
                 document_id=document_id
             )
             
-            # Get relevant passages
-            relevant_passages = rag_service.similarity_search(
+            # Get relevant passages using hybrid search
+            relevant_passages = rag_service.hybrid_search(
                 session=session,
                 query_embedding=query_embedding,
+                query_text=claim.claim_text,
                 document_id=document_id,
-                top_k=5
+                top_k=8  # Increased for better evidence gathering
             )
             
             # Analyze evidence

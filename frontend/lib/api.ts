@@ -105,8 +105,13 @@ export const uploadDocument = async (
 }
 
 export const analyzeDocument = async (documentId: string) => {
-  const response = await api.post<AnalysisResponse>(
-    `/documents/${documentId}/analyze`
+  // Use direct backend API for analysis to avoid Next.js proxy timeout
+  const response = await backendApi.post<AnalysisResponse>(
+    `/documents/${documentId}/analyze`,
+    {},
+    {
+      timeout: 300000, // 5 minutes timeout for AI analysis
+    }
   )
   return response.data
 }
@@ -136,3 +141,25 @@ export const listCompanies = async () => {
   return response.data
 }
 
+export const deleteDocumentClaims = async (documentId: string) => {
+  const response = await backendApi.delete(`/documents/${documentId}/claims`)
+  return response.data
+}
+
+export const reprocessDocument = async (documentId: string) => {
+  const response = await backendApi.post(`/documents/${documentId}/reprocess`, {}, {
+    timeout: 300000, // 5 minutes for reprocessing
+  })
+  return response.data
+}
+
+export const reanalyzeDocument = async (documentId: string) => {
+  // Delete claims first, then reanalyze
+  await deleteDocumentClaims(documentId)
+  return analyzeDocument(documentId)
+}
+
+export const resetDatabase = async () => {
+  const response = await backendApi.post('/admin/reset')
+  return response.data
+}

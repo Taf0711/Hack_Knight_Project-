@@ -191,3 +191,31 @@ body {
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
 }
 
+/* Layout helpers */
+.container-max {
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  color: hsl(var(--foreground));
+}
+
+/* Card base */
+.card-base {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(17, 24, 39, 0.06);
+  padding: 20px;
+}
+
+/* Responsive helpers */
+@media (min-width: 768px) {
+  .container-max { padding-left: 24px; padding-right: 24px; }
+}
+

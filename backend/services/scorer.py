@@ -16,7 +16,7 @@ class ClaimScorer:
         evidence_list: List[Dict]
     ) -> Tuple[List[Dict], str]:
         """
-        Score a claim across multiple dimensions
+        Score a claim across multiple dimensions including confidence
         Returns: (scores_list, overall_rating)
         """
         scores = []
@@ -34,10 +34,17 @@ class ClaimScorer:
         offset_dependency_score = self._score_offset_dependency(claim, evidence_list)
         scores.append(offset_dependency_score)
         
+        # Add confidence dimension
+        confidence_score = self._score_confidence(claim, evidence_list)
+        scores.append(confidence_score)
+        
         # Calculate overall rating
         overall_rating = self._calculate_overall_rating(scores)
         
-        self.logger.info(f"Scored claim with rating: {overall_rating}")
+        self.logger.info(
+            f"Scored claim with rating: {overall_rating}",
+            avg_score=sum(s['value'] for s in scores) / len(scores) if scores else 0
+        )
         return scores, overall_rating
     
     def _score_integrity(self, claim: Dict, evidence_list: List[Dict]) -> Dict:
@@ -171,6 +178,46 @@ class ClaimScorer:
             "explanation": explanation
         }
     
+    def _score_confidence(self, claim: Dict, evidence_list: List[Dict]) -> Dict:
+        """
+        Score based on claim confidence and evidence certainty
+        Penalizes low-confidence claims and uncertain evidence
+        """
+        # Get claim confidence if available (1-3 scale from claim extraction)
+        claim_confidence = claim.get("confidence", 2)  # Default to medium
+        
+        # Get evidence confidence if available
+        evidence_confidences = [
+            e.get("confidence", 0) for e in evidence_list if e.get("confidence") is not None
+        ]
+        
+        avg_evidence_confidence = (
+            sum(evidence_confidences) / len(evidence_confidences)
+            if evidence_confidences else 0
+        )
+        
+        # Calculate confidence score
+        # High confidence claim (3) + strong evidence (3) = 100
+        # Low confidence claim (1) + weak evidence (0) = 0
+        claim_score = (claim_confidence / 3.0) * 50  # 0-50 points from claim
+        evidence_score = (avg_evidence_confidence / 3.0) * 50  # 0-50 points from evidence
+        
+        value = claim_score + evidence_score
+        
+        # Generate explanation
+        if claim_confidence >= 3 and avg_evidence_confidence >= 2:
+            explanation = "High confidence claim with strong evidence certainty."
+        elif claim_confidence <= 1 or avg_evidence_confidence <= 1:
+            explanation = "Low confidence in claim or evidence. Requires additional verification."
+        else:
+            explanation = f"Moderate confidence (claim: {claim_confidence}/3, evidence: {avg_evidence_confidence:.1f}/3)."
+        
+        return {
+            "dimension": "confidence",
+            "value": value,
+            "explanation": explanation
+        }
+    
     def _calculate_overall_rating(self, scores: List[Dict]) -> str:
         """
         Calculate traffic-light rating from dimension scores
@@ -179,12 +226,13 @@ class ClaimScorer:
         if not scores:
             return "red"
         
-        # Calculate weighted average
+        # Calculate weighted average with new confidence dimension
         weights = {
-            "integrity": 0.4,
-            "verifiability": 0.3,
-            "scope_coverage": 0.2,
-            "offset_dependency": 0.1
+            "integrity": 0.35,  # Reduced from 0.4
+            "verifiability": 0.25,  # Reduced from 0.3
+            "scope_coverage": 0.15,  # Reduced from 0.2
+            "offset_dependency": 0.10,  # Same
+            "confidence": 0.15  # New dimension
         }
         
         weighted_sum = 0.0

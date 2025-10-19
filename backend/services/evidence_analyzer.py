@@ -5,6 +5,10 @@ from google.genai import types
 import structlog
 from config import GEMINI_API_KEY
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from prompts.templates import get_evidence_analysis_prompt
+from utils.grounding import validate_citations
 
 logger = structlog.get_logger()
 
@@ -19,38 +23,46 @@ class EvidenceAnalyzer:
     
     def analyze_claim(self, claim_text: str, context_passages: List[Dict]) -> Dict:
         """
-        Analyze a single claim against context passages
-        Returns evidence analysis with stance and rationale
+        Analyze a single claim against context passages with structured reasoning
+        Returns evidence analysis with stance, confidence, reasoning steps, and validated citations
         """
-        prompt = self._build_analysis_prompt(claim_text, context_passages)
+        # Use enhanced prompt with structured reasoning framework
+        prompt = get_evidence_analysis_prompt(claim_text, context_passages)
         
         try:
-            # Create structured content
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=prompt)]
-                )
-            ]
-            
-            # Configure generation for deeper analysis
-            generate_config = types.GenerateContentConfig(
-                temperature=0.2,  # Slightly higher for nuanced analysis
-                top_p=0.95,
-                top_k=40,
-                max_output_tokens=4096,
-            )
-            
-            # Generate content
+            # Simple API call as per Gemini docs
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=contents,
-                config=generate_config
+                contents=prompt
             )
+            
+            # Check if response is valid
+            if not response or not response.text:
+                self.logger.error("Gemini returned empty response")
+                return {
+                    "stance": "insufficient",
+                    "strength": 0,
+                    "confidence": 0,
+                    "rationale": "No response from API",
+                    "reasoning_steps": [],
+                    "citations": []
+                }
             
             evidence = self._parse_response(response.text, context_passages)
             
-            self.logger.info(f"Analyzed claim: {claim_text[:50]}...")
+            # Validate citations to detect hallucinations
+            if evidence.get("citations"):
+                evidence["citations"] = validate_citations(
+                    evidence["citations"],
+                    context_passages
+                )
+            
+            self.logger.info(
+                f"Analyzed claim: {claim_text[:50]}...",
+                stance=evidence.get("stance"),
+                confidence=evidence.get("confidence"),
+                num_citations=len(evidence.get("citations", []))
+            )
             return evidence
             
         except Exception as e:
@@ -59,61 +71,28 @@ class EvidenceAnalyzer:
             return {
                 "stance": "insufficient",
                 "strength": 0,
+                "confidence": 0,
                 "rationale": f"Analysis failed: {str(e)}",
+                "reasoning_steps": [],
                 "citations": []
             }
     
-    def _build_analysis_prompt(self, claim_text: str, passages: List[Dict]) -> str:
-        """Build prompt for evidence analysis"""
-        context = self._format_passages(passages)
-        
-        return f"""You are an expert fact-checker analyzing environmental claims for potential greenwashing.
-
-Claim to analyze:
-"{claim_text}"
-
-Available evidence from the source document:
-{context}
-
-Task: Evaluate whether the evidence SUPPORTS, CONTRADICTS, or is INSUFFICIENT to validate this claim.
-
-Consider:
-1. Is there concrete data backing the claim?
-2. Are baselines and methodologies clearly stated?
-3. Are there qualifications or limitations mentioned?
-4. Is the claim specific or vague?
-5. Are there any contradictions in the document?
-
-Return ONLY a valid JSON object with this structure:
-{{
-  "stance": "supports" | "contradicts" | "insufficient",
-  "strength": 0-3,
-  "rationale": "Brief explanation (2-3 sentences)",
-  "cited_passages": [0, 1, 2]
-}}
-
-Where:
-- stance: Your assessment of how the evidence relates to the claim
-- strength: 0=no evidence, 1=weak, 2=moderate, 3=strong
-- rationale: Clear explanation of your reasoning
-- cited_passages: Array of passage indices that support your assessment
-
-Return ONLY the JSON, no other text.
-"""
-    
-    def _format_passages(self, passages: List[Dict]) -> str:
-        """Format passages for the prompt"""
-        formatted = []
-        for i, passage in enumerate(passages):
-            page = passage.get("page", "?")
-            text = passage.get("text", "")
-            formatted.append(f"[Passage {i}, Page {page}]\n{text}")
-        
-        return "\n\n---\n\n".join(formatted)
     
     def _parse_response(self, response_text: str, passages: List[Dict]) -> Dict:
         """Parse Gemini response into structured evidence"""
         try:
+            # Handle None response
+            if response_text is None:
+                self.logger.error("Received None response from Gemini")
+                return {
+                    "stance": "insufficient",
+                    "strength": 0,
+                    "confidence": 0,
+                    "rationale": "No response received from AI",
+                    "reasoning_steps": [],
+                    "citations": []
+                }
+            
             # Extract JSON from response
             response_text = response_text.strip()
             
@@ -128,23 +107,30 @@ Return ONLY the JSON, no other text.
             
             data = json.loads(response_text)
             
-            # Build citations from cited passages
+            # Build citations from cited passages with longer context
             citations = []
             cited_indices = data.get("cited_passages", [])
             
             for idx in cited_indices:
                 if 0 <= idx < len(passages):
                     passage = passages[idx]
+                    # Increased from 200 to 400 chars for better context
+                    snippet = passage.get("text", "")[:400]
+                    if len(passage.get("text", "")) > 400:
+                        snippet += "..."
+                    
                     citations.append({
                         "page": passage.get("page"),
-                        "snippet": passage.get("text", "")[:200] + "...",
+                        "snippet": snippet,
                         "document_id": str(passage.get("document_id", ""))
                     })
             
             return {
                 "stance": data.get("stance", "insufficient"),
                 "strength": data.get("strength", 0),
+                "confidence": data.get("confidence", 0),  # Add confidence field
                 "rationale": data.get("rationale", ""),
+                "reasoning_steps": data.get("reasoning_steps", []),  # Add reasoning steps
                 "citations": citations
             }
             
@@ -153,7 +139,9 @@ Return ONLY the JSON, no other text.
             return {
                 "stance": "insufficient",
                 "strength": 0,
+                "confidence": 0,
                 "rationale": "Failed to parse analysis",
+                "reasoning_steps": [],
                 "citations": []
             }
 

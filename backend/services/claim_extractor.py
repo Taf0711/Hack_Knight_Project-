@@ -5,6 +5,9 @@ from google.genai import types
 import structlog
 from config import GEMINI_API_KEY
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from prompts.templates import get_claim_extraction_prompt, get_document_summary_prompt
 
 logger = structlog.get_logger()
 
@@ -17,36 +20,128 @@ class ClaimExtractor:
         self.model_name = "gemini-2.5-flash"
         self.logger = logger.bind(service="claim_extractor")
     
+    def _smart_sample_document(self, text: str, page_dict: Dict[int, str] = None) -> str:
+        """
+        Smart sampling: Extract strategic sections from large documents
+        Improved algorithm with broader keyword matching and more inclusive sampling
+        """
+        import re
+        
+        # Optimized target size to avoid token limits (Gemini context + output limits)
+        # With 8192 output tokens, we can afford more input
+        TARGET_SIZE = 25000  # 25k chars (~6k tokens) + 8k output = ~14k total tokens
+        
+        if len(text) <= TARGET_SIZE:
+            self.logger.info(f"Document small enough ({len(text)} chars), using full text")
+            return text
+        
+        self.logger.info(f"Smart sampling {len(text)} char document → {TARGET_SIZE} chars")
+        
+        # Strategy: Take beginning + keyword-rich sections + end
+        samples = []
+        
+        # 1. Beginning (first 8k) - usually has executive summary, key commitments
+        samples.append(text[:8000])
+        self.logger.info("✓ Sampled: First 8k chars (intro/executive summary)")
+        
+        # 2. Keyword-rich sections (middle 12k) - find paragraphs with important terms
+        # Expanded keyword list for better recall
+        keywords = [
+            # Emissions & Climate
+            'net zero', 'carbon neutral', 'climate neutral', 'carbon negative',
+            'scope 1', 'scope 2', 'scope 3', 'scope1', 'scope2', 'scope3',
+            'emissions', 'reduction', 'ghg', 'co2', 'tco2e', 'carbon',
+            # Targets & Years
+            'target', 'goal', 'commitment', 'pledge', 'ambition',
+            '2025', '2030', '2035', '2040', '2045', '2050',
+            'baseline', '2015', '2019', '2020', '2021', '2022', '2023', '2024',
+            # Energy & Renewables
+            'renewable', 'solar', 'wind', 'energy efficiency', 'clean energy',
+            # Verification & Standards
+            'sbti', 'science-based', 'verified', 'third-party', 'audit',
+            # Progress & Achievement
+            'achieved', 'progress', 'milestone', 'delivered', 'accomplished',
+            # Sustainability topics
+            'sustainable', 'sustainability', 'esg', 'environmental', 'climate'
+        ]
+        
+        middle_section = text[8000:-5000] if len(text) > 13000 else text[8000:]
+        
+        # Split into paragraphs (more aggressive splitting)
+        paragraphs = re.split(r'\n\n+|\n(?=[A-Z])', middle_section)
+        
+        # Score each paragraph by keyword density
+        scored_paragraphs = []
+        for para in paragraphs:
+            if len(para) < 30:  # More lenient threshold
+                continue
+            para_lower = para.lower()
+            score = sum(1 for kw in keywords if kw in para_lower)
+            # Include paragraphs with even 1 keyword match
+            if score >= 1:
+                scored_paragraphs.append((score, para))
+        
+        # Take top paragraphs up to 12k chars
+        scored_paragraphs.sort(reverse=True, key=lambda x: x[0])
+        middle_sample = []
+        middle_length = 0
+        for score, para in scored_paragraphs:
+            if middle_length + len(para) > 12000:
+                break
+            middle_sample.append(para)
+            middle_length += len(para)
+        
+        if middle_sample:
+            samples.append('\n\n'.join(middle_sample))
+            self.logger.info(f"✓ Sampled: {len(middle_sample)} keyword-rich paragraphs ({middle_length} chars)")
+        else:
+            # Fallback: if no keyword matches, just take middle section
+            self.logger.warning("No keyword-rich paragraphs found, taking middle section")
+            samples.append(middle_section[:12000])
+        
+        # 3. End (last 5k) - often has commitments/forward-looking statements
+        if len(text) > 13000:
+            samples.append(text[-5000:])
+            self.logger.info("✓ Sampled: Last 5k chars (conclusions/targets)")
+        
+        combined = '\n\n---\n\n'.join(samples)
+        self.logger.info(f"Smart sampling complete: {len(combined)} chars from {len(text)} original")
+        
+        return combined
+
     def extract_claims(self, text: str, page_dict: Dict[int, str] = None) -> List[Dict]:
         """
-        Extract structured environmental claims from text
-        Returns list of claim dictionaries
+        Extract structured environmental claims using smart sampling
+        Fast approach: sample strategic sections instead of processing entire document
         """
-        prompt = self._build_extraction_prompt(text)
+        original_length = len(text)
+        self.logger.info(f"Extracting claims from {original_length} character document")
+        
+        # Log first 500 chars to verify document content
+        self.logger.info(f"Document preview: {text[:500]}")
+        
+        # Smart sample the document (much faster than two-stage)
+        sampled_text = self._smart_sample_document(text, page_dict)
+        
+        # Extract claims from sampled text
+        self.logger.info(f"Extracting claims from {len(sampled_text)} chars of sampled text")
+        self.logger.info(f"Sampled text preview: {sampled_text[:500]}")
+        
+        prompt = get_claim_extraction_prompt(sampled_text)
         
         try:
-            # Create structured content
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=prompt)]
-                )
-            ]
-            
-            # Configure generation
-            generate_config = types.GenerateContentConfig(
-                temperature=0.1,  # Low temperature for consistent structured output
-                top_p=0.95,
-                top_k=40,
-                max_output_tokens=8192,
-            )
-            
-            # Generate content
+            # Simple API call as per Gemini docs
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=contents,
-                config=generate_config
+                contents=prompt  # Direct string, not structured Content
             )
+            
+            # Check if response is valid
+            if not response or not response.text:
+                self.logger.error("Gemini returned empty response")
+                return []
+            
+            self.logger.info(f"Received response from Gemini: {len(response.text)} chars")
             
             claims_data = self._parse_response(response.text)
             
@@ -54,53 +149,57 @@ class ClaimExtractor:
             if page_dict:
                 claims_data = self._enrich_with_page_numbers(claims_data, page_dict)
             
-            self.logger.info(f"Extracted {len(claims_data)} claims")
+            # Validate claims have required fields
+            claims_data = self._validate_claims(claims_data)
+            
+            self.logger.info(
+                f"Extracted {len(claims_data)} claims",
+                avg_confidence=sum(c.get('confidence', 0) for c in claims_data) / len(claims_data) if claims_data else 0
+            )
             return claims_data
             
         except Exception as e:
             self.logger.error("claim extraction failed", error=str(e))
             raise
     
-    def _build_extraction_prompt(self, text: str) -> str:
-        """Build the prompt for claim extraction"""
-        return f"""You are an expert environmental analyst. Extract all environmental and sustainability claims from the following document.
-
-For each claim, identify:
-1. claim_text: The exact claim being made
-2. claim_type: One of ["target", "achievement", "plan", "offset", "commitment"]
-3. topic: One of ["net_zero", "scope1", "scope2", "scope3", "renewable", "emissions_reduction", "carbon_neutral", "water", "waste", "biodiversity", "other"]
-4. target_year: Year the target should be achieved (if mentioned)
-5. baseline_year: Baseline year for comparison (if mentioned)
-6. scope_covered: Array of emission scopes covered (e.g., ["S1", "S2", "S3"])
-7. numeric_value: Any numeric value mentioned (e.g., 50 for "50% reduction")
-8. units: Units of the numeric value (e.g., "%", "tCO2e", "MWh")
-
-Return ONLY a valid JSON array of claims, nothing else. Format:
-[
-  {{
-    "claim_text": "...",
-    "claim_type": "...",
-    "topic": "...",
-    "target_year": 2030,
-    "baseline_year": 2020,
-    "scope_covered": ["S1", "S2"],
-    "numeric_value": 50.0,
-    "units": "%"
-  }}
-]
-
-If no claims found, return an empty array: []
-
-Document text:
-{text[:15000]}
-"""
+    def _validate_claims(self, claims: List[Dict]) -> List[Dict]:
+        """Validate and enhance extracted claims"""
+        validated = []
+        
+        for claim in claims:
+            # Ensure required fields exist
+            if not claim.get("claim_text"):
+                continue
+            
+            # Set defaults for missing fields
+            claim.setdefault("claim_type", "commitment")
+            claim.setdefault("topic", "other")
+            claim.setdefault("confidence", 2)  # Default medium confidence
+            claim.setdefault("target_year", None)
+            claim.setdefault("baseline_year", None)
+            claim.setdefault("scope_covered", [])
+            claim.setdefault("numeric_value", None)
+            claim.setdefault("units", None)
+            
+            validated.append(claim)
+        
+        return validated
     
     def _parse_response(self, response_text: str) -> List[Dict]:
         """Parse Gemini response into structured claims"""
         try:
+            # Handle None response
+            if response_text is None:
+                self.logger.error("Received None response from Gemini")
+                return []
+            
+            # Log raw response for debugging
+            self.logger.info(f"Parsing response (first 500 chars): {response_text[:500]}")
+            
             # Extract JSON from response (handle markdown code blocks)
             response_text = response_text.strip()
             
+            # Remove markdown code blocks
             if response_text.startswith("```json"):
                 response_text = response_text[7:]
             if response_text.startswith("```"):
@@ -110,17 +209,74 @@ Document text:
             
             response_text = response_text.strip()
             
-            claims = json.loads(response_text)
+            # Try to find JSON array in the text
+            # Sometimes Gemini adds explanatory text before/after JSON
+            start_idx = response_text.find('[')
+            end_idx = response_text.rfind(']')
+            
+            if start_idx == -1 or end_idx == -1:
+                self.logger.error("No JSON array found in response", response_text=response_text[:1000])
+                return []
+            
+            if end_idx <= start_idx:
+                self.logger.error("Invalid JSON array indices", start=start_idx, end=end_idx)
+                return []
+            
+            json_text = response_text[start_idx:end_idx + 1]
+            self.logger.info(f"Extracted JSON (first 300 chars): {json_text[:300]}")
+            
+            try:
+                claims = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                # JSON might be truncated due to MAX_TOKENS - try to repair it
+                self.logger.warning(f"JSON parse error, attempting to repair truncated JSON: {str(e)}")
+                
+                # Try to fix truncated JSON by closing it properly
+                json_text_repaired = self._repair_truncated_json(json_text)
+                
+                try:
+                    claims = json.loads(json_text_repaired)
+                    self.logger.info(f"Successfully repaired and parsed truncated JSON")
+                except json.JSONDecodeError as e2:
+                    self.logger.error(
+                        "failed to parse even after repair", 
+                        error=str(e2),
+                        response_preview=response_text[:1000]
+                    )
+                    return []
             
             if not isinstance(claims, list):
                 self.logger.warning("Response is not a list, returning empty")
                 return []
             
+            self.logger.info(f"Successfully parsed {len(claims)} claims from response")
             return claims
             
         except json.JSONDecodeError as e:
-            self.logger.error("failed to parse JSON response", error=str(e))
+            self.logger.error(
+                "failed to parse JSON response", 
+                error=str(e), 
+                error_pos=e.pos if hasattr(e, 'pos') else None,
+                response_preview=response_text[:1000]
+            )
             return []
+    
+    def _repair_truncated_json(self, json_text: str) -> str:
+        """
+        Attempt to repair truncated JSON array by closing incomplete objects
+        """
+        # Find the last complete object by looking for the last "},"
+        last_complete = json_text.rfind('},')
+        
+        if last_complete == -1:
+            # No complete objects, return empty array
+            return '[]'
+        
+        # Truncate at the last complete object and close the array
+        repaired = json_text[:last_complete + 1] + '\n]'
+        
+        self.logger.info(f"Repaired JSON by truncating at last complete object (position {last_complete})")
+        return repaired
     
     def _enrich_with_page_numbers(self, claims: List[Dict], page_dict: Dict[int, str]) -> List[Dict]:
         """Add page numbers to claims by matching text"""

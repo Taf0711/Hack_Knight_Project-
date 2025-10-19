@@ -29,9 +29,9 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
     if (averageScore >= 70) {
       return {
         label: 'Low Greenwashing Risk',
-        color: '#10b981',
-        icon: <CheckCircle sx={{ fontSize: 60, color: '#10b981' }} />,
-        bgcolor: '#d1fae5'
+        color: '#2d6a4f',
+        icon: <CheckCircle sx={{ fontSize: 60, color: '#2d6a4f' }} />,
+        bgcolor: '#d8f3dc'
       }
     } else if (averageScore >= 40) {
       return {
@@ -111,11 +111,14 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
       transition={{ duration: 0.6 }}
     >
       <Card 
-        elevation={3}
+        elevation={0}
         sx={{
           borderRadius: 4,
           overflow: 'hidden',
-          mb: 4
+          mb: 4,
+          border: '1px solid',
+          borderColor: '#b7e4c7',
+          boxShadow: 'none',
         }}
       >
         <Box
@@ -124,7 +127,7 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
             p: 4
           }}
         >
-          <Typography variant="h4" align="center" gutterBottom fontWeight="bold" color="text.primary">
+          <Typography variant="h4" align="center" gutterBottom fontWeight="bold" sx={{ color: '#1b4332' }}>
             Overall Greenwashing Assessment
           </Typography>
 
@@ -135,7 +138,7 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
             transition={{ delay: 0.2, duration: 0.5 }}
           >
             <Paper
-              elevation={2}
+              elevation={0}
               sx={{
                 maxWidth: 400,
                 mx: 'auto',
@@ -143,7 +146,8 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
                 p: 4,
                 borderRadius: 3,
                 textAlign: 'center',
-                bgcolor: verdict.bgcolor
+                bgcolor: verdict.bgcolor,
+                boxShadow: 'none',
               }}
             >
               <Box display="flex" justifyContent="center" mb={2}>
@@ -171,8 +175,8 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
           {/* Statistics */}
           <Grid container spacing={3} sx={{ mt: 2 }}>
             <Grid item xs={12} md={3}>
-              <Paper elevation={1} sx={{ p: 2, textAlign: 'center', borderRadius: 2 }}>
-                <Typography variant="h5" fontWeight="bold" color="text.primary">
+              <Paper elevation={0} sx={{ p: 2, textAlign: 'center', borderRadius: 2, border: '1px solid', borderColor: '#b7e4c7' }}>
+                <Typography variant="h5" fontWeight="bold" sx={{ color: '#1b4332' }}>
                   {totalClaims}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
@@ -182,8 +186,8 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
             </Grid>
             
             <Grid item xs={12} md={3}>
-              <Paper elevation={1} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#d1fae5' }}>
-                <Typography variant="h5" fontWeight="bold" color="#059669">
+              <Paper elevation={0} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#d8f3dc', border: '1px solid', borderColor: '#b7e4c7' }}>
+                <Typography variant="h5" fontWeight="bold" sx={{ color: '#2d6a4f' }}>
                   {greenCount}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
@@ -193,7 +197,7 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
             </Grid>
             
             <Grid item xs={12} md={3}>
-              <Paper elevation={1} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#fef3c7' }}>
+              <Paper elevation={0} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#fef3c7', border: '1px solid', borderColor: '#fde68a' }}>
                 <Typography variant="h5" fontWeight="bold" color="#d97706">
                   {amberCount}
                 </Typography>
@@ -204,7 +208,7 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
             </Grid>
             
             <Grid item xs={12} md={3}>
-              <Paper elevation={1} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#fee2e2' }}>
+              <Paper elevation={0} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#fee2e2', border: '1px solid', borderColor: '#fecaca' }}>
                 <Typography variant="h5" fontWeight="bold" color="#dc2626">
                   {redCount}
                 </Typography>
@@ -267,7 +271,7 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
             )
 
             const getColor = (score: number) => {
-              if (score >= 70) return '#10b981'
+              if (score >= 70) return '#2d6a4f'
               if (score >= 40) return '#f59e0b'
               return '#ef4444'
             }

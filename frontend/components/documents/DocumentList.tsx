@@ -48,12 +48,14 @@ export function DocumentList() {
       {documents.map((doc) => (
         <div
           key={doc.id}
-          className="border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer bg-white"
+          className="rounded-xl p-4 hover:shadow-lg transition-shadow transform-gpu hover:-translate-y-1 cursor-pointer bg-white border"
           onClick={() => router.push(`/documents/${doc.id}`)}
         >
-          <div className="flex items-start justify-between">
-            <div className="flex items-start flex-1">
-              <FileText className="h-5 w-5 text-green-600 mr-3 mt-0.5 flex-shrink-0" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center flex-1 min-w-0">
+              <div className="flex items-center justify-center h-9 w-9 rounded-md bg-green-50 mr-3 flex-shrink-0">
+                <FileText className="h-4 w-4 text-green-600" />
+              </div>
               <div className="flex-1 min-w-0">
                 <h4 className="font-medium text-gray-900 truncate">
                   {doc.title}

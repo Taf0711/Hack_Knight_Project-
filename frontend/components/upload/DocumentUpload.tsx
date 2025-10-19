@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { useDropzone } from 'react-dropzone'
 import {
   Box,
@@ -23,9 +24,11 @@ import { uploadDocument } from '@/lib/api'
 
 interface DocumentUploadProps {
   onSuccess?: () => void
+  autoNavigate?: boolean
 }
 
-export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
+export function DocumentUpload({ onSuccess, autoNavigate = true }: DocumentUploadProps) {
+  const router = useRouter()
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -54,7 +57,7 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
     }, 200)
 
     try {
-      await uploadDocument(file, {
+      const response = await uploadDocument(file, {
         title: file.name.replace('.pdf', ''),
       })
       
@@ -62,14 +65,22 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
       setProgress(100)
       setSuccess(true)
       
-      setTimeout(() => {
-        setSuccess(false)
-        setProgress(0)
-        setFileName('')
-      }, 4000)
-      
       if (onSuccess) {
         onSuccess()
+      }
+      
+      // Auto-navigate to document page after short delay
+      if (autoNavigate && response?.id) {
+        setTimeout(() => {
+          router.push(`/documents/${response.id}`)
+        }, 1500)
+      } else {
+        // If not auto-navigating, reset after delay
+        setTimeout(() => {
+          setSuccess(false)
+          setProgress(0)
+          setFileName('')
+        }, 4000)
       }
     } catch (err: any) {
       clearInterval(progressInterval)
@@ -78,7 +89,7 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
     } finally {
       setUploading(false)
     }
-  }, [onSuccess])
+  }, [onSuccess, autoNavigate, router])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -95,19 +106,24 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
         {...getRootProps()}
         elevation={isDragActive ? 8 : 2}
         sx={{
-          p: 4,
+          p: { xs: 3, md: 5 },
           textAlign: 'center',
           cursor: uploading ? 'not-allowed' : 'pointer',
           border: '2px dashed',
           borderColor: isDragActive ? 'primary.main' : 'grey.300',
           bgcolor: isDragActive ? 'primary.50' : 'grey.50',
           borderRadius: 3,
-          transition: 'all 0.3s ease',
-          opacity: uploading ? 0.7 : 1,
+          transition: 'all 0.25s ease',
+          opacity: uploading ? 0.9 : 1,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 2,
           '&:hover': {
             borderColor: uploading ? 'grey.300' : 'primary.light',
             bgcolor: uploading ? 'grey.50' : 'primary.50',
-            transform: uploading ? 'none' : 'scale(1.02)',
+            transform: uploading ? 'none' : 'translateY(-4px)',
           }
         }}
       >
@@ -121,28 +137,28 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
             >
-              <Box>
-                <CloudUpload sx={{ fontSize: 64, color: 'primary.main', mb: 2 }} className="animate-pulse-slow" />
+              <Box sx={{ width: '100%' }}>
+                <CloudUpload sx={{ fontSize: 56, color: 'primary.main', mb: 1 }} className="animate-pulse-slow" />
                 <Typography variant="h6" color="primary" gutterBottom>
                   Uploading {fileName}...
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                   Processing document and creating embeddings
                 </Typography>
-                <Box sx={{ width: '80%', mx: 'auto', mt: 2 }}>
+                <Box sx={{ width: { xs: '100%', md: '70%' }, mx: 'auto', mt: 2 }}>
                   <LinearProgress 
                     variant="determinate" 
                     value={progress}
                     sx={{
                       height: 8,
-                      borderRadius: 4,
+                      borderRadius: 6,
                       '& .MuiLinearProgress-bar': {
-                        borderRadius: 4,
+                        borderRadius: 6,
                         background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)'
                       }
                     }}
                   />
-                  <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', textAlign: 'center' }}>
                     {progress}%
                   </Typography>
                 </Box>
@@ -156,15 +172,15 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
               exit={{ opacity: 0, scale: 0.9 }}
             >
               <Zoom in={true}>
-                <Box>
-                  <CheckCircle sx={{ fontSize: 64, color: 'success.main', mb: 2 }} className="animate-bounce-subtle" />
-                  <Typography variant="h6" color="success.main" gutterBottom>
-                    Upload Successful!
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {fileName} is ready for analysis
-                  </Typography>
-                </Box>
+              <Box>
+                <CheckCircle sx={{ fontSize: 48, color: 'success.main', mb: 1 }} className="animate-bounce-subtle" />
+                <Typography variant="h6" color="success.main" gutterBottom>
+                  Upload Successful!
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {autoNavigate ? 'Redirecting to analysis...' : `${fileName} is ready for analysis`}
+                </Typography>
+              </Box>
               </Zoom>
             </motion.div>
           ) : (
@@ -177,25 +193,25 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
               <Box>
                 <CloudUpload
                   sx={{
-                    fontSize: 64,
+                    fontSize: 48,
                     color: isDragActive ? 'primary.main' : 'grey.400',
-                    mb: 2,
-                    transition: 'all 0.3s ease'
+                    mb: 1,
+                    transition: 'all 0.2s ease'
                   }}
                 />
                 {isDragActive ? (
-                  <Typography variant="h6" color="primary" fontWeight="600">
+                  <Typography variant="h6" color="primary" fontWeight={600}>
                     Drop your PDF here...
                   </Typography>
                 ) : (
                   <>
-                    <Typography variant="h6" color="text.primary" fontWeight="600" gutterBottom>
+                    <Typography variant="h6" color="text.primary" fontWeight={600} gutterBottom>
                       Drop a PDF file here
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
                       or click to browse
                     </Typography>
-                    <Typography variant="caption" color="text.disabled" sx={{ mt: 2, display: 'block' }}>
+                    <Typography variant="caption" color="text.disabled" sx={{ mt: 1, display: 'block' }}>
                       Maximum file size: 50MB
                     </Typography>
                   </>
@@ -233,7 +249,7 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
               sx={{ mt: 2, borderRadius: 2 }}
             >
               <AlertTitle>Success!</AlertTitle>
-              Document uploaded successfully. Processing may take 1-2 minutes.
+              Document uploaded successfully. {autoNavigate ? 'Redirecting to analysis page...' : 'Ready for analysis!'}
             </Alert>
           </Fade>
         )}

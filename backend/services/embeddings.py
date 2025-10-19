@@ -19,12 +19,13 @@ class EmbeddingService:
     
     def chunk_text(self, text: str, page_dict: Dict[int, str] = None) -> List[Dict]:
         """
-        Split text into chunks with metadata
-        Returns list of dicts with: text, char_start, char_end, page
+        Split text into optimized chunks for sustainability reports
+        Returns list of dicts with: text, char_start, char_end, page, metadata
         """
+        # Optimized for sustainability reports: smaller chunks preserve context better
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=800,  # Reduced from 1000 for better granularity
+            chunk_overlap=150,  # Reduced from 200 but still good context
             length_function=len,
             separators=["\n\n", "\n", ". ", " ", ""]
         )
@@ -41,11 +42,15 @@ class EmbeddingService:
                     char_start = current_pos
                     char_end = current_pos + len(chunk_text)
                     
+                    # Add metadata tags for better retrieval
+                    metadata = self._analyze_chunk_content(chunk_text)
+                    
                     chunks.append({
                         "text": chunk_text,
                         "page": page_num,
                         "char_start": char_start,
-                        "char_end": char_end
+                        "char_end": char_end,
+                        "metadata": metadata
                     })
                     
                     current_pos = char_end
@@ -58,17 +63,43 @@ class EmbeddingService:
                 char_start = current_pos
                 char_end = current_pos + len(chunk_text)
                 
+                # Add metadata tags
+                metadata = self._analyze_chunk_content(chunk_text)
+                
                 chunks.append({
                     "text": chunk_text,
                     "page": None,
                     "char_start": char_start,
-                    "char_end": char_end
+                    "char_end": char_end,
+                    "metadata": metadata
                 })
                 
                 current_pos = char_end
         
-        self.logger.info(f"Created {len(chunks)} chunks from text")
+        self.logger.info(
+            f"Created {len(chunks)} chunks",
+            with_numbers=sum(1 for c in chunks if c.get('metadata', {}).get('has_numbers')),
+            with_targets=sum(1 for c in chunks if c.get('metadata', {}).get('has_target_language'))
+        )
         return chunks
+    
+    def _analyze_chunk_content(self, text: str) -> Dict:
+        """
+        Analyze chunk content and add metadata tags for better retrieval
+        """
+        import re
+        
+        metadata = {
+            "has_numbers": bool(re.search(r'\d+', text)),
+            "has_percentages": bool(re.search(r'\d+(?:\.\d+)?%', text)),
+            "has_years": bool(re.search(r'\b20\d{2}\b', text)),
+            "has_target_language": any(kw in text.lower() for kw in ['target', 'goal', 'commit', 'achieve', 'reduce']),
+            "has_scope_mention": any(scope in text.lower() for scope in ['scope 1', 'scope 2', 'scope 3', 'scope1', 'scope2', 'scope3']),
+            "has_emissions_data": any(unit in text.lower() for unit in ['tco2e', 'co2', 'emissions', 'ghg']),
+            "char_length": len(text)
+        }
+        
+        return metadata
     
     def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a single text"""

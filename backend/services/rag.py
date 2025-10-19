@@ -3,12 +3,16 @@ from uuid import UUID
 from sqlmodel import Session, select, text
 import structlog
 from models.database import Passage, Document
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from utils.grounding import extract_keywords, calculate_keyword_overlap
 
 logger = structlog.get_logger()
 
 
 class RAGService:
-    """Retrieval-Augmented Generation service using pgvector"""
+    """Retrieval-Augmented Generation service using pgvector with hybrid search"""
     
     def __init__(self):
         self.logger = logger.bind(service="rag")
@@ -18,8 +22,8 @@ class RAGService:
         session: Session,
         query_embedding: List[float],
         document_id: Optional[UUID] = None,
-        top_k: int = 5,
-        similarity_threshold: float = 0.7
+        top_k: int = 8,  # Increased from 5 to 8 for better recall
+        similarity_threshold: float = 0.65  # Lowered from 0.7 to 0.65 for better recall
     ) -> List[Dict]:
         """
         Search for similar passages using cosine similarity
@@ -91,8 +95,71 @@ class RAGService:
                     "similarity": similarity
                 })
         
-        self.logger.info(f"Found {len(passages)} similar passages")
+        self.logger.info(
+            f"Found {len(passages)} similar passages",
+            avg_similarity=sum(p['similarity'] for p in passages) / len(passages) if passages else 0
+        )
         return passages
+    
+    def hybrid_search(
+        self,
+        session: Session,
+        query_embedding: List[float],
+        query_text: str,
+        document_id: Optional[UUID] = None,
+        top_k: int = 8
+    ) -> List[Dict]:
+        """
+        Hybrid search combining semantic similarity and keyword matching
+        
+        Args:
+            session: Database session
+            query_embedding: Query embedding vector
+            query_text: Original query text for keyword extraction
+            document_id: Optional document ID filter
+            top_k: Number of results to return
+        
+        Returns:
+            List of passages ranked by hybrid score
+        """
+        # Extract keywords from query
+        keywords = extract_keywords(query_text)
+        
+        # Get more passages initially (will re-rank)
+        semantic_results = self.similarity_search(
+            session=session,
+            query_embedding=query_embedding,
+            document_id=document_id,
+            top_k=min(15, top_k * 2),  # Get 2x results for re-ranking
+            similarity_threshold=0.60  # Even lower threshold for first pass
+        )
+        
+        # Re-rank with hybrid scoring
+        for passage in semantic_results:
+            # Calculate keyword overlap score
+            keyword_score = calculate_keyword_overlap(passage['text'], keywords)
+            
+            # Hybrid score: 70% semantic + 30% keyword
+            passage['keyword_score'] = keyword_score
+            passage['hybrid_score'] = (
+                passage['similarity'] * 0.7 + 
+                keyword_score * 0.3
+            )
+        
+        # Sort by hybrid score and return top_k
+        ranked_passages = sorted(
+            semantic_results,
+            key=lambda x: x['hybrid_score'],
+            reverse=True
+        )[:top_k]
+        
+        self.logger.info(
+            f"Hybrid search found {len(ranked_passages)} passages",
+            num_keywords=len(keywords),
+            avg_hybrid_score=sum(p['hybrid_score'] for p in ranked_passages) / len(ranked_passages) if ranked_passages else 0
+        )
+        
+        return ranked_passages
     
     def get_context_for_claim(
         self,
@@ -103,15 +170,16 @@ class RAGService:
         max_tokens: int = 3000
     ) -> str:
         """
-        Retrieve relevant context passages for a claim
+        Retrieve relevant context passages for a claim using hybrid search
         Returns concatenated context string
         """
-        passages = self.similarity_search(
+        # Use hybrid search for better retrieval
+        passages = self.hybrid_search(
             session=session,
             query_embedding=query_embedding,
+            query_text=claim_text,
             document_id=document_id,
-            top_k=10,
-            similarity_threshold=0.6
+            top_k=10
         )
         
         # Build context string within token limit

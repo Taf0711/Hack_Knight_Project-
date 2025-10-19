@@ -1,4 +1,4 @@
-.PHONY: help setup start stop restart logs clean test
+.PHONY: help setup start stop restart logs clean reset test
 
 help:
 	@echo "Greenwash Detector - Available Commands:"
@@ -8,6 +8,7 @@ help:
 	@echo "  make stop     - Stop all services"
 	@echo "  make restart  - Restart all services"
 	@echo "  make logs     - View logs from all services"
+	@echo "  make reset    - Clear all data (keep services running)"
 	@echo "  make clean    - Remove containers and volumes"
 	@echo "  make test     - Run tests"
 	@echo ""
@@ -59,6 +60,15 @@ logs-frontend:
 
 logs-db:
 	docker-compose logs -f postgres
+
+reset:
+	@echo "⚠️  This will delete ALL documents, claims, and uploaded files. Continue? [y/N] " && read ans && [ $${ans:-N} = y ]
+	@echo "Resetting database..."
+	docker-compose exec -T postgres psql -U greenwash_user -d greenwash_db -c "TRUNCATE TABLE score, evidence, claim, passage, document, company RESTART IDENTITY CASCADE;"
+	@echo "Clearing uploads directory..."
+	rm -rf uploads/*
+	@echo "✅ Database and uploads cleared! Services still running."
+	@echo "   Refresh your browser to see clean state."
 
 clean:
 	@echo "⚠️  This will remove all containers and data. Continue? [y/N] " && read ans && [ $${ans:-N} = y ]
