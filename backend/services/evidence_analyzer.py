@@ -20,6 +20,43 @@ class EvidenceAnalyzer:
         self.client = genai.Client(api_key=GEMINI_API_KEY)
         self.model_name = "gemini-2.5-flash"
         self.logger = logger.bind(service="evidence_analyzer")
+
+    def _evidence_response_schema(self) -> Dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "reasoning_steps": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "stance": {
+                    "type": "string",
+                    "enum": ["supports", "contradicts", "insufficient"]
+                },
+                "strength": {
+                    "type": "integer",
+                    "enum": [0, 1, 2, 3]
+                },
+                "confidence": {
+                    "type": "integer",
+                    "enum": [0, 1, 2, 3]
+                },
+                "rationale": {"type": "string"},
+                "cited_passages": {
+                    "type": "array",
+                    "items": {"type": "integer"}
+                }
+            },
+            "required": [
+                "reasoning_steps",
+                "stance",
+                "strength",
+                "confidence",
+                "rationale",
+                "cited_passages"
+            ]
+        }
     
     def analyze_claim(self, claim_text: str, context_passages: List[Dict]) -> Dict:
         """
@@ -30,10 +67,18 @@ class EvidenceAnalyzer:
         prompt = get_evidence_analysis_prompt(claim_text, context_passages)
         
         try:
-            # Simple API call as per Gemini docs
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=prompt
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=4096,
+                    response_mime_type="application/json",
+                    response_json_schema=self._evidence_response_schema(),
+                    thinking_config=types.ThinkingConfig(
+                        thinking_budget=4096,
+                    ),
+                )
             )
             
             # Check if response is valid
@@ -114,12 +159,11 @@ class EvidenceAnalyzer:
             for idx in cited_indices:
                 if 0 <= idx < len(passages):
                     passage = passages[idx]
-                    # Increased from 200 to 400 chars for better context
-                    snippet = passage.get("text", "")[:400]
-                    if len(passage.get("text", "")) > 400:
-                        snippet += "..."
+                    # Keep an exact contiguous substring so validation can verify it.
+                    snippet = (passage.get("text", "") or "")[:240].strip()
                     
                     citations.append({
+                        "passage_id": str(passage.get("id", "")),
                         "page": passage.get("page"),
                         "snippet": snippet,
                         "document_id": str(passage.get("document_id", ""))
@@ -144,4 +188,3 @@ class EvidenceAnalyzer:
                 "reasoning_steps": [],
                 "citations": []
             }
-

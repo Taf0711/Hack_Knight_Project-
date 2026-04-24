@@ -94,13 +94,42 @@ def validate_citations(citations: List[Dict], all_passages: List[Dict]) -> List[
         List of citations with added 'validation' field
     """
     passage_texts = [p.get("text", "") for p in all_passages]
+    passages_by_id = {
+        str(p.get("id")): p
+        for p in all_passages
+        if p.get("id") is not None
+    }
     
     validated_citations = []
     for citation in citations:
         snippet = citation.get("snippet", "")
-        
-        # Verify the citation
-        verification = verify_citation(snippet, passage_texts)
+        passage_id = citation.get("passage_id")
+
+        if passage_id and passage_id in passages_by_id:
+            passage_text = passages_by_id[passage_id].get("text", "")
+            snippet_clean = re.sub(r'\s+', ' ', snippet.strip())
+            passage_clean = re.sub(r'\s+', ' ', passage_text.strip())
+
+            if snippet_clean and snippet_clean.lower() in passage_clean.lower():
+                verification = {
+                    "verified": True,
+                    "best_match": snippet_clean,
+                    "similarity": 1.0,
+                    "passage_index": None,
+                    "method": "exact_passage_id_substring",
+                }
+            else:
+                verification = {
+                    "verified": False,
+                    "best_match": passage_clean[:len(snippet_clean) + 50] if snippet_clean else passage_clean[:100],
+                    "similarity": fuzzy_match(snippet_clean, passage_clean) if snippet_clean and passage_clean else 0.0,
+                    "passage_index": None,
+                    "method": "passage_id_mismatch",
+                    "reason": "Snippet was not found in the cited passage text",
+                }
+        else:
+            # Fallback for older citations without stable passage identifiers.
+            verification = verify_citation(snippet, passage_texts, threshold=0.75)
         
         # Add verification results to citation
         validated_citation = citation.copy()
@@ -184,4 +213,3 @@ def calculate_keyword_overlap(text: str, keywords: List[str]) -> float:
     matches = sum(1 for kw in keywords if kw.lower() in text_lower)
     
     return matches / len(keywords)
-

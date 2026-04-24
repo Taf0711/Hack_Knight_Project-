@@ -46,6 +46,23 @@ class ClaimScorer:
             avg_score=sum(s['value'] for s in scores) / len(scores) if scores else 0
         )
         return scores, overall_rating
+
+    def calculate_overall_rating(self, scores: List) -> str:
+        """
+        Public helper for reusing the same weighted rating logic across endpoints.
+        Accepts score dicts or ORM objects with `dimension` and `value` attributes.
+        """
+        normalized_scores = []
+        for score in scores:
+            if isinstance(score, dict):
+                normalized_scores.append(score)
+            else:
+                normalized_scores.append({
+                    "dimension": getattr(score, "dimension", None),
+                    "value": getattr(score, "value", 0.0),
+                })
+
+        return self._calculate_overall_rating(normalized_scores)
     
     def _score_integrity(self, claim: Dict, evidence_list: List[Dict]) -> Dict:
         """
@@ -255,4 +272,3 @@ class ClaimScorer:
             return "amber"
         else:
             return "red"
-

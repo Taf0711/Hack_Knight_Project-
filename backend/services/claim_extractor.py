@@ -1,5 +1,7 @@
 from typing import List, Dict
 import json
+import re
+from difflib import SequenceMatcher
 from google import genai
 from google.genai import types
 import structlog
@@ -8,6 +10,7 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from prompts.templates import get_claim_extraction_prompt, get_document_summary_prompt
+from services.document_segmentation import DocumentSegmentationService
 
 logger = structlog.get_logger()
 
@@ -19,14 +22,70 @@ class ClaimExtractor:
         self.client = genai.Client(api_key=GEMINI_API_KEY)
         self.model_name = "gemini-2.5-flash"
         self.logger = logger.bind(service="claim_extractor")
+        self.segmenter = DocumentSegmentationService()
+        self.segment_target_chars = 6500
+        self.segment_overlap_chars = 600
+
+    def _claim_response_schema(self) -> Dict:
+        return {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "claim_text": {"type": "string"},
+                    "claim_type": {
+                        "type": "string",
+                        "enum": ["target", "achievement", "commitment", "plan"]
+                    },
+                    "topic": {
+                        "type": "string",
+                        "enum": [
+                            "emissions_reduction",
+                            "net_zero",
+                            "renewable_energy",
+                            "waste_circularity",
+                            "water",
+                            "biodiversity",
+                            "supply_chain",
+                            "other",
+                        ]
+                    },
+                    "target_year": {"type": ["integer", "null"]},
+                    "baseline_year": {"type": ["integer", "null"]},
+                    "numeric_value": {"type": ["number", "null"]},
+                    "units": {"type": ["string", "null"]},
+                    "scope_covered": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["S1", "S2", "S3"]
+                        }
+                    },
+                    "confidence": {
+                        "type": "integer",
+                        "enum": [1, 2, 3]
+                    }
+                },
+                "required": [
+                    "claim_text",
+                    "claim_type",
+                    "topic",
+                    "target_year",
+                    "baseline_year",
+                    "numeric_value",
+                    "units",
+                    "scope_covered",
+                    "confidence"
+                ]
+            }
+        }
     
     def _smart_sample_document(self, text: str, page_dict: Dict[int, str] = None) -> str:
         """
         Smart sampling: Extract strategic sections from large documents
         Improved algorithm with broader keyword matching and more inclusive sampling
         """
-        import re
-        
         # Optimized target size to avoid token limits (Gemini context + output limits)
         # With 8192 output tokens, we can afford more input
         TARGET_SIZE = 25000  # 25k chars (~6k tokens) + 8k output = ~14k total tokens
@@ -109,6 +168,170 @@ class ClaimExtractor:
         
         return combined
 
+    def _segment_sampled_text(self, sampled_text: str) -> List[str]:
+        """
+        Break sampled text into smaller extraction segments to reduce truncated JSON
+        and keep each model call focused.
+        """
+        if len(sampled_text) <= self.segment_target_chars:
+            return [sampled_text]
+
+        paragraphs = [
+            part.strip()
+            for part in re.split(r"\n\s*\n", sampled_text)
+            if part.strip()
+        ]
+        if not paragraphs:
+            return [sampled_text]
+
+        segments: List[str] = []
+        current_parts: List[str] = []
+        current_len = 0
+
+        for paragraph in paragraphs:
+            paragraph_len = len(paragraph)
+            separator_len = 2 if current_parts else 0
+
+            if current_parts and current_len + separator_len + paragraph_len > self.segment_target_chars:
+                segment = "\n\n".join(current_parts).strip()
+                if segment:
+                    segments.append(segment)
+
+                overlap_parts: List[str] = []
+                overlap_len = 0
+                for existing in reversed(current_parts):
+                    extra = len(existing) + (2 if overlap_parts else 0)
+                    if overlap_len + extra > self.segment_overlap_chars:
+                        break
+                    overlap_parts.insert(0, existing)
+                    overlap_len += extra
+
+                current_parts = overlap_parts.copy()
+                current_len = sum(len(part) for part in current_parts) + max(len(current_parts) - 1, 0) * 2
+
+            current_parts.append(paragraph)
+            current_len += paragraph_len + (2 if len(current_parts) > 1 else 0)
+
+        if current_parts:
+            segments.append("\n\n".join(current_parts).strip())
+
+        return segments
+
+    def get_document_segments(self, text: str, page_dict: Dict[int, str] | None = None) -> Dict[str, List[Dict]]:
+        """
+        Build reusable document segments.
+        If page-level text exists, prefer page/section-aware segmentation.
+        Otherwise fall back to text-only extraction batches.
+        """
+        if page_dict:
+            return self.segmenter.build_segments(page_dict)
+
+        sampled_text = self._smart_sample_document(text, page_dict)
+        fallback_batches = []
+        for index, segment_text in enumerate(self._segment_sampled_text(sampled_text), start=1):
+            fallback_batches.append({
+                "segment_id": f"batch-{index}",
+                "segment_type": "extraction_batch",
+                "title": f"Text Batch {index}",
+                "page_start": None,
+                "page_end": None,
+                "pages": [],
+                "segment_ids": [],
+                "text": segment_text,
+                "char_count": len(segment_text),
+                "preview": segment_text[:220],
+            })
+
+        return {
+            "pages": [],
+            "sections": [],
+            "extraction_batches": fallback_batches,
+        }
+
+    def _extract_claims_from_segment(self, segment_text: str, segment_index: int, total_segments: int) -> List[Dict]:
+        prompt = get_claim_extraction_prompt(segment_text)
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=4096,
+                response_mime_type="application/json",
+                response_json_schema=self._claim_response_schema(),
+            )
+        )
+
+        if not response or not response.text:
+            self.logger.warning(
+                "Gemini returned empty claim segment response",
+                segment_index=segment_index,
+                total_segments=total_segments,
+            )
+            return []
+
+        self.logger.info(
+            "Received claim extraction response",
+            segment_index=segment_index,
+            total_segments=total_segments,
+            response_chars=len(response.text),
+        )
+        return self._parse_response(response.text)
+
+    def _deduplicate_claims(self, claims: List[Dict]) -> List[Dict]:
+        """
+        Merge near-duplicate claims returned from overlapping extraction segments.
+        Keep the more specific variant when duplicates collide.
+        """
+        def normalize(text: str) -> str:
+            return " ".join((text or "").lower().split())
+
+        def specificity_score(claim: Dict) -> tuple:
+            return (
+                claim.get("confidence", 0),
+                1 if claim.get("numeric_value") is not None else 0,
+                1 if claim.get("target_year") else 0,
+                1 if claim.get("baseline_year") else 0,
+                len(claim.get("scope_covered") or []),
+                len(claim.get("claim_text", "")),
+            )
+
+        deduped: List[Dict] = []
+        seen_keys: Dict[str, int] = {}
+
+        for claim in claims:
+            claim_text = claim.get("claim_text", "")
+            key = normalize(claim_text)
+            if not key:
+                continue
+
+            replacement_index = None
+            if key in seen_keys:
+                replacement_index = seen_keys[key]
+            else:
+                for index, existing in enumerate(deduped):
+                    existing_key = normalize(existing.get("claim_text", ""))
+                    if not existing_key:
+                        continue
+                    similarity = SequenceMatcher(None, key, existing_key).ratio()
+                    if similarity >= 0.92:
+                        replacement_index = index
+                        break
+
+            if replacement_index is None:
+                seen_keys[key] = len(deduped)
+                deduped.append(claim)
+                continue
+
+            existing = deduped[replacement_index]
+            if specificity_score(claim) > specificity_score(existing):
+                deduped[replacement_index] = claim
+                seen_keys[key] = replacement_index
+            else:
+                if existing.get("page") is None and claim.get("page") is not None:
+                    existing["page"] = claim["page"]
+
+        return deduped
+
     def extract_claims(self, text: str, page_dict: Dict[int, str] = None) -> List[Dict]:
         """
         Extract structured environmental claims using smart sampling
@@ -120,30 +343,32 @@ class ClaimExtractor:
         # Log first 500 chars to verify document content
         self.logger.info(f"Document preview: {text[:500]}")
         
-        # Smart sample the document (much faster than two-stage)
-        sampled_text = self._smart_sample_document(text, page_dict)
-        
-        # Extract claims from sampled text
-        self.logger.info(f"Extracting claims from {len(sampled_text)} chars of sampled text")
-        self.logger.info(f"Sampled text preview: {sampled_text[:500]}")
-        
-        prompt = get_claim_extraction_prompt(sampled_text)
+        segment_payload = self.get_document_segments(text, page_dict)
+        extraction_batches = segment_payload["extraction_batches"]
+
+        self.logger.info(
+            "Prepared claim extraction segments",
+            num_segments=len(extraction_batches),
+            segment_sizes=[batch["char_count"] for batch in extraction_batches],
+        )
         
         try:
-            # Simple API call as per Gemini docs
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt  # Direct string, not structured Content
-            )
-            
-            # Check if response is valid
-            if not response or not response.text:
-                self.logger.error("Gemini returned empty response")
-                return []
-            
-            self.logger.info(f"Received response from Gemini: {len(response.text)} chars")
-            
-            claims_data = self._parse_response(response.text)
+            all_claims: List[Dict] = []
+            for index, batch in enumerate(extraction_batches, start=1):
+                segment = batch["text"]
+                self.logger.info(
+                    "Extracting claims from segment",
+                    segment_index=index,
+                    total_segments=len(extraction_batches),
+                    segment_chars=len(segment),
+                    segment_preview=segment[:300],
+                    segment_title=batch.get("title"),
+                    pages=batch.get("pages"),
+                )
+                segment_claims = self._extract_claims_from_segment(segment, index, len(extraction_batches))
+                all_claims.extend(segment_claims)
+
+            claims_data = self._deduplicate_claims(all_claims)
             
             # Add page numbers if available
             if page_dict:
@@ -164,6 +389,17 @@ class ClaimExtractor:
     
     def _validate_claims(self, claims: List[Dict]) -> List[Dict]:
         """Validate and enhance extracted claims"""
+        allowed_claim_types = {"target", "achievement", "commitment", "plan"}
+        allowed_topics = {
+            "emissions_reduction",
+            "net_zero",
+            "renewable_energy",
+            "waste_circularity",
+            "water",
+            "biodiversity",
+            "supply_chain",
+            "other",
+        }
         validated = []
         
         for claim in claims:
@@ -180,6 +416,11 @@ class ClaimExtractor:
             claim.setdefault("scope_covered", [])
             claim.setdefault("numeric_value", None)
             claim.setdefault("units", None)
+
+            if claim.get("claim_type") not in allowed_claim_types:
+                claim["claim_type"] = "commitment"
+            if claim.get("topic") not in allowed_topics:
+                claim["topic"] = "other"
             
             validated.append(claim)
         
@@ -280,17 +521,54 @@ class ClaimExtractor:
     
     def _enrich_with_page_numbers(self, claims: List[Dict], page_dict: Dict[int, str]) -> List[Dict]:
         """Add page numbers to claims by matching text"""
+        def normalize(text: str) -> str:
+            return " ".join((text or "").split()).lower()
+
         for claim in claims:
             claim_text = claim.get("claim_text", "")
-            
+            claim_norm = normalize(claim_text)
+            if not claim_norm:
+                claim["page"] = None
+                continue
+
+            claim_start = claim_norm[:80]
+            claim_end = claim_norm[-40:] if len(claim_norm) > 40 else claim_norm
+
+            best_page = None
+            best_score = 0.0
+
             # Find which page contains this claim
             for page_num, page_text in page_dict.items():
-                if claim_text[:50] in page_text:  # Match first 50 chars
+                page_norm = normalize(page_text)
+                if not page_norm:
+                    continue
+
+                if claim_norm in page_norm or claim_start in page_norm:
                     claim["page"] = page_num
                     break
-            
+
+                score = 0.0
+                if claim_start and claim_start in page_norm:
+                    score += 3.0
+                if claim_end and claim_end in page_norm:
+                    score += 2.0
+
+                if score == 0.0:
+                    similarity = SequenceMatcher(
+                        None,
+                        claim_norm[: min(len(claim_norm), 120)],
+                        page_norm[: min(len(page_norm), 400)]
+                    ).ratio()
+                    score += similarity
+
+                if score > best_score:
+                    best_score = score
+                    best_page = page_num
+
             if "page" not in claim:
+                claim["page"] = best_page if best_score >= 1.0 else None
+
+            if claim.get("page") is None:
                 claim["page"] = None
         
         return claims
-

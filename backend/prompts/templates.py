@@ -52,6 +52,33 @@ def format_claim_examples():
     return "\n".join(formatted)
 
 
+CLAIM_EXTRACTION_NON_EXAMPLES = [
+    {
+        "text": "We are pleased to present our fifteenth sustainability report.",
+        "reason": "Report meta statement, not an environmental claim.",
+    },
+    {
+        "text": "In 2024, we made significant progress in our environmental stewardship.",
+        "reason": "Generic progress language without a concrete target, metric, or verified outcome.",
+    },
+    {
+        "text": "Our commitment to sustainability is unwavering.",
+        "reason": "Brand or values language without an auditable assertion.",
+    },
+]
+
+
+def format_claim_non_examples():
+    """Format negative examples for the prompt"""
+    formatted = []
+    for i, example in enumerate(CLAIM_EXTRACTION_NON_EXAMPLES, 1):
+        formatted.append(f"Do NOT extract example {i}:")
+        formatted.append(f"Text: \"{example['text']}\"")
+        formatted.append(f"Reason: {example['reason']}")
+        formatted.append("")
+    return "\n".join(formatted)
+
+
 # Greenwashing red flags
 GREENWASHING_RED_FLAGS = [
     "Vague language without specifics (\"eco-friendly\", \"green\", \"sustainable\" without metrics)",
@@ -84,7 +111,9 @@ TEXT:
 
 def get_claim_extraction_prompt(text: str) -> str:
     """Extract structured claims from sampled document text"""
-    return f"""You are an expert sustainability analyst. Extract ALL significant environmental and climate-related claims from this document.
+    examples = format_claim_examples()
+    non_examples = format_claim_non_examples()
+    return f"""You are an expert sustainability analyst. Extract auditable environmental and climate-related claims from this document.
 
 WHAT TO EXTRACT:
 ✓ Emissions reduction targets or achievements (any scope)
@@ -96,31 +125,62 @@ WHAT TO EXTRACT:
 ✓ Environmental achievements with data
 ✓ Climate action plans and roadmaps
 
-IMPORTANT: Extract BOTH specific claims (with numbers) AND general commitments (without specific numbers).
-Cast a wide net - it's better to extract more claims than to miss important ones.
+IMPORTANT:
+- Extract BOTH specific claims (with numbers) AND forward-looking commitments that contain a concrete target, scope, methodology, or timeline.
+- Prefer precision over volume. It is better to return fewer high-quality claims than to include generic sustainability prose.
+- If the same fact appears multiple times, keep only the most specific version.
+
+ONLY EXTRACT SUBSTANTIVE CLAIMS:
+- Prefer complete sentences or sentence fragments that make an auditable assertion.
+- Keep the wording verbatim from the document, but do not return page furniture, table-of-contents labels, navigation text, or isolated headings.
+- Do NOT extract standalone assurance titles, appendix labels, section names, or topic headers unless they contain an actual factual or forward-looking environmental claim.
+- Do NOT extract generic fragments like "waste and circularity" or "Amazon Scope 3 Assurance" unless surrounding text states what was assured, measured, achieved, or committed.
+- If a statement is purely descriptive branding language with no environmental assertion, skip it.
+- When a claim includes a metric, year, baseline, scope, or methodology, preserve that detail in the claim text.
+- Do NOT extract report meta statements, introductory framing, or generic progress language such as:
+  - "we are pleased to present this report"
+  - "we made significant progress"
+  - "our commitment is unwavering"
+  unless the same sentence also contains a concrete environmental target, metric, validation result, or named action.
+- Do NOT extract a vague wrapper sentence if the next sentence contains the measurable claim. Extract the measurable claim instead.
 
 OUTPUT FORMAT - Return ONLY valid JSON array (no other text):
 [{{
   "claim_text": "exact claim from document (copy verbatim)",
   "claim_type": "target" | "achievement" | "commitment" | "plan",
-  "topic": "emissions_reduction" | "net_zero" | "renewable_energy" | "other",
+  "topic": "emissions_reduction" | "net_zero" | "renewable_energy" | "waste_circularity" | "water" | "biodiversity" | "supply_chain" | "other",
   "target_year": year or null,
   "baseline_year": year or null,
   "numeric_value": number or null,
-  "units": "%" | "tCO2e" | "MWh" | "GWh" | "tonnes" | null,
+  "units": exact unit string from document or null,
   "scope_covered": ["S1", "S2", "S3"] or [],
   "confidence": 1 (vague) | 2 (moderate) | 3 (specific with data)
 }}]
 
-EXAMPLES:
-- "We reduced emissions by 25% from 2019 baseline" → confidence: 3
-- "We commit to net zero by 2050" → confidence: 2
-- "We are committed to sustainability" → confidence: 1
+TOPIC MAPPING:
+- Emissions, carbon, greenhouse gas, Scope 1/2/3 -> "emissions_reduction" or "net_zero"
+- Renewable electricity, power purchase agreements, solar, wind -> "renewable_energy"
+- Waste, recycling, diversion, packaging circularity -> "waste_circularity"
+- Water efficiency, water replenishment, wastewater -> "water"
+- Nature, forests, biodiversity, habitat restoration -> "biodiversity"
+- Supplier emissions, supplier renewable energy, supply-chain commitments -> "supply_chain"
+- If nothing fits cleanly -> "other"
+
+CONFIDENCE GUIDANCE:
+- 3: specific metric, target, baseline, scope, validation, or named project
+- 2: concrete claim with some specificity but missing one or more key details
+- 1: still an environmental claim, but too vague to verify strongly
+
+POSITIVE EXAMPLES:
+{examples}
+
+NEGATIVE EXAMPLES:
+{non_examples}
 
 DOCUMENT TEXT:
 {text}
 
-Extract ALL environmental claims now as JSON array:"""
+Return ONLY the JSON array now:"""
 
 
 def get_evidence_analysis_prompt(claim_text: str, passages: list) -> str:
@@ -142,35 +202,19 @@ CLAIM TO ANALYZE:
 AVAILABLE EVIDENCE FROM SOURCE DOCUMENT:
 {context}
 
-STRUCTURED REASONING FRAMEWORK:
-
-1. UNDERSTANDING
-   What is this claim specifically asserting? What evidence would prove or disprove it?
-
-2. EVIDENCE REVIEW
-   Which passages are directly relevant? What specific data or facts do they provide?
-
-3. CONSISTENCY CHECK
-   Do passages contradict each other? Are there gaps or missing information?
-
-4. GREENWASHING SIGNALS
-   - Is the language specific or vague?
-   - Are numbers, baselines, and methodologies provided?
-   - Is the scope comprehensive (including Scope 3)?
-   - Are there hidden qualifications or limitations?
-   - Is there transparency about methodology and verification?
-
-5. VERDICT
-   Based on the evidence, does it SUPPORT, CONTRADICT, or is it INSUFFICIENT?
+ASSESSMENT RULES:
+- Focus on whether the passages support, contradict, or fail to support the exact claim.
+- Prefer passages with the same metric, date, baseline, scope, and named initiative as the claim.
+- Distinguish contradiction from temporal drift. "As of today" versus "year-end 2024" is not a contradiction unless they claim the same timestamp.
+- Ignore weakly related sustainability passages that do not bear on the claim directly.
+- Keep reasoning concise. Use short factual steps, not long essays.
 
 OUTPUT FORMAT (return ONLY valid JSON):
 {{
   "reasoning_steps": [
-    "Step 1: Understanding - ...",
-    "Step 2: Evidence review - ...",
-    "Step 3: Consistency check - ...",
-    "Step 4: Greenwashing signals - ...",
-    "Step 5: Verdict - ..."
+    "Short step 1",
+    "Short step 2",
+    "Short step 3"
   ],
   "stance": "supports" | "contradicts" | "insufficient",
   "strength": 0 | 1 | 2 | 3,
@@ -184,8 +228,7 @@ Where:
 - strength: 0=no evidence, 1=weak, 2=moderate, 3=strong
 - confidence: 0=very uncertain, 1=somewhat uncertain, 2=moderately certain, 3=highly certain
 - rationale: Clear, concise explanation
-- cited_passages: Indices of passages that support your analysis
+- cited_passages: Indices of directly relevant passages only. Cite the minimum set needed to justify the verdict.
 
 Return ONLY the JSON object, no other text.
 """
-

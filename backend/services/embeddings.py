@@ -1,4 +1,5 @@
 from typing import List, Dict
+import time
 from google import genai
 from google.genai import types
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -15,7 +16,7 @@ class EmbeddingService:
     def __init__(self):
         self.client = genai.Client(api_key=GEMINI_API_KEY)
         self.logger = logger.bind(service="embeddings")
-        self.model_name = "text-embedding-004"
+        self.model_name = "gemini-embedding-001"
     
     def chunk_text(self, text: str, page_dict: Dict[int, str] = None) -> List[Dict]:
         """
@@ -101,47 +102,75 @@ class EmbeddingService:
         
         return metadata
     
+    def _embed_with_retry(self, contents, config=None, max_retries=3) -> list:
+        for attempt in range(max_retries):
+            try:
+                result = self.client.models.embed_content(
+                    model=self.model_name,
+                    contents=contents,
+                    config=config,
+                )
+                return result.embeddings
+            except Exception as e:
+                err_str = str(e)
+                if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str) and attempt < max_retries - 1:
+                    wait = 2 ** (attempt + 1)
+                    self.logger.warning(f"Rate limited, retrying in {wait}s", attempt=attempt + 1)
+                    time.sleep(wait)
+                else:
+                    raise
+
     def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for a single text"""
+        """Generate embedding for a single document passage"""
         try:
-            result = self.client.models.embed_content(
-                model=self.model_name,
-                contents=text
+            embeddings = self._embed_with_retry(
+                contents=text,
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_DOCUMENT",
+                    output_dimensionality=768,
+                ),
             )
-            return result.embeddings[0].values
+            return embeddings[0].values
         except Exception as e:
             self.logger.error("embedding generation failed", error=str(e))
             raise
-    
+
     def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for multiple texts"""
+        """Generate embeddings for multiple texts using true batching"""
         embeddings = []
-        
-        # Process in batches to avoid rate limits
-        batch_size = 50
+        batch_size = 100
+
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            
+            self.logger.info(f"Embedding batch {i // batch_size + 1}/{(len(texts) - 1) // batch_size + 1} ({len(batch)} texts)")
+
             try:
-                for text in batch:
-                    embedding = self.generate_embedding(text)
-                    embeddings.append(embedding)
+                results = self._embed_with_retry(
+                    contents=batch,
+                    config=types.EmbedContentConfig(
+                        task_type="RETRIEVAL_DOCUMENT",
+                        output_dimensionality=768,
+                    ),
+                )
+                embeddings.extend([e.values for e in results])
             except Exception as e:
                 self.logger.error(f"batch embedding failed at index {i}", error=str(e))
-                # Continue with remaining batches
-                continue
-        
+                raise
+
         self.logger.info(f"Generated {len(embeddings)} embeddings")
         return embeddings
-    
+
     def generate_query_embedding(self, query: str) -> List[float]:
-        """Generate embedding for search query"""
+        """Generate embedding for a search query"""
         try:
-            result = self.client.models.embed_content(
-                model=self.model_name,
-                contents=query
+            embeddings = self._embed_with_retry(
+                contents=query,
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_QUERY",
+                    output_dimensionality=768,
+                ),
             )
-            return result.embeddings[0].values
+            return embeddings[0].values
         except Exception as e:
             self.logger.error("query embedding failed", error=str(e))
             raise
