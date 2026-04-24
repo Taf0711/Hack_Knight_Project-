@@ -154,7 +154,7 @@ export function DocumentUpload({ onSuccess, autoNavigate = true }: DocumentUploa
                       borderRadius: 6,
                       '& .MuiLinearProgress-bar': {
                         borderRadius: 6,
-                        background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)'
+                        background: 'linear-gradient(90deg, #2d6a4f 0%, #74c69d 100%)'
                       }
                     }}
                   />

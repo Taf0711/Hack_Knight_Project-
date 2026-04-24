@@ -174,7 +174,7 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
 
           {/* Statistics */}
           <Grid container spacing={3} sx={{ mt: 2 }}>
-            <Grid item xs={12} md={3}>
+            <Grid size={{ xs: 12, md: 3 }}>
               <Paper elevation={0} sx={{ p: 2, textAlign: 'center', borderRadius: 2, border: '1px solid', borderColor: '#b7e4c7' }}>
                 <Typography variant="h5" fontWeight="bold" sx={{ color: '#1b4332' }}>
                   {totalClaims}
@@ -185,35 +185,38 @@ export function VerdictSummary({ claims }: VerdictSummaryProps) {
               </Paper>
             </Grid>
             
-            <Grid item xs={12} md={3}>
+            <Grid size={{ xs: 12, md: 3 }}>
               <Paper elevation={0} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#d8f3dc', border: '1px solid', borderColor: '#b7e4c7' }}>
                 <Typography variant="h5" fontWeight="bold" sx={{ color: '#2d6a4f' }}>
                   {greenCount}
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  🟢 Low Risk
+                <Typography variant="body2" color="text.secondary" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+                  <Box component="span" sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#2d6a4f', display: 'inline-block' }} />
+                  Low Risk
                 </Typography>
               </Paper>
             </Grid>
-            
-            <Grid item xs={12} md={3}>
+
+            <Grid size={{ xs: 12, md: 3 }}>
               <Paper elevation={0} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#fef3c7', border: '1px solid', borderColor: '#fde68a' }}>
                 <Typography variant="h5" fontWeight="bold" color="#d97706">
                   {amberCount}
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  🟡 Moderate
+                <Typography variant="body2" color="text.secondary" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+                  <Box component="span" sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#d4a24a', display: 'inline-block' }} />
+                  Moderate
                 </Typography>
               </Paper>
             </Grid>
-            
-            <Grid item xs={12} md={3}>
+
+            <Grid size={{ xs: 12, md: 3 }}>
               <Paper elevation={0} sx={{ p: 2, textAlign: 'center', borderRadius: 2, bgcolor: '#fee2e2', border: '1px solid', borderColor: '#fecaca' }}>
                 <Typography variant="h5" fontWeight="bold" color="#dc2626">
                   {redCount}
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  🔴 High Risk
+                <Typography variant="body2" color="text.secondary" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+                  <Box component="span" sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#c14b3f', display: 'inline-block' }} />
+                  High Risk
                 </Typography>
               </Paper>
             </Grid>

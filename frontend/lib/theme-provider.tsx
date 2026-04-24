@@ -6,14 +6,16 @@ import { ReactNode } from 'react'
 const theme = createTheme({
   palette: {
     primary: {
-      main: '#667eea',
-      light: '#8b9df2',
-      dark: '#4c5fc7',
+      main: '#2d6a4f',
+      light: '#52b788',
+      dark: '#1b4332',
+      contrastText: '#ffffff',
     },
     secondary: {
-      main: '#764ba2',
-      light: '#9a6dc3',
-      dark: '#5a3980',
+      main: '#d4a24a',
+      light: '#e7bd74',
+      dark: '#a87b2d',
+      contrastText: '#1b4332',
     },
     success: {
       main: '#10b981',
@@ -44,15 +46,21 @@ const theme = createTheme({
     },
   },
   typography: {
-    fontFamily: 'Inter, system-ui, Avenir, Helvetica, Arial, sans-serif',
+    fontFamily: 'var(--font-inter), Inter, system-ui, Avenir, Helvetica, Arial, sans-serif',
     h1: {
+      fontFamily: 'var(--font-fraunces), Fraunces, Georgia, serif',
       fontWeight: 800,
+      letterSpacing: '-0.02em',
     },
     h2: {
+      fontFamily: 'var(--font-fraunces), Fraunces, Georgia, serif',
       fontWeight: 700,
+      letterSpacing: '-0.02em',
     },
     h3: {
+      fontFamily: 'var(--font-fraunces), Fraunces, Georgia, serif',
       fontWeight: 700,
+      letterSpacing: '-0.01em',
     },
     h4: {
       fontWeight: 600,
